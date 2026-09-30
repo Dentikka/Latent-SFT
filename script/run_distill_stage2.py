@@ -34,6 +34,18 @@ from src.stage2.trainer import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_resume(training_args):
+    """`--resume_from_checkpoint auto` resumes from the newest checkpoint in output_dir
+    (or starts fresh if there is none); an explicit path is passed through; unset keeps
+    the original behaviour of training from scratch."""
+    ckpt = training_args.resume_from_checkpoint
+    if ckpt == "auto":
+        from transformers.trainer_utils import get_last_checkpoint
+        ckpt = get_last_checkpoint(training_args.output_dir) if os.path.isdir(training_args.output_dir) else None
+        logger.warning("resume_from_checkpoint=auto -> %s", ckpt)
+    return ckpt
+
+
 def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
@@ -109,7 +121,7 @@ def main():
     Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Training
-    trainer.train()
+    trainer.train(resume_from_checkpoint=_resolve_resume(training_args))
     trainer.save_model()
 
 
