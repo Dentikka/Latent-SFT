@@ -4,8 +4,8 @@
 #SBATCH -A fpmi-p10
 #SBATCH -p cpu
 #SBATCH -J lsft-setup
-#SBATCH -c 8
-#SBATCH --mem=40G
+#SBATCH -c 4
+#SBATCH --mem=24G
 #SBATCH -t 04:00:00
 #SBATCH -o /home/data/%u/logs/%x-%j.log
 set -euo pipefail
