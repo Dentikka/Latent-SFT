@@ -23,7 +23,6 @@ pip_ transformers==4.52.4 peft==0.15.2 datasets==3.6.0 accelerate==1.7.0 \
      scikit-learn==1.7.0 wandb tensorboard jsonlines sentencepiece protobuf \
      "huggingface_hub[hf_transfer]" setuptools wheel ninja packaging
 DS_BUILD_OPS=0 pip_ --no-build-isolation deepspeed==0.17.0
-pip_ "nvidia-cuda-nvcc-cu12==12.4.*"   # nvcc for DeepSpeed's import-time CUDA check, see env.sh
 pip_ "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"
 # Eval-only deps; their pins may clash, so a failure here must not stop the setup.
 pip_ pylatexenc==2.10 latex2sympy2==1.9.1 word2number==1.1 || echo "WARN: eval deps failed"

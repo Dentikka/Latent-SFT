@@ -21,11 +21,25 @@ export WANDB_BASE_URL="${WANDB_BASE_URL:-https://wandb-radfan.ru}"
 export WANDB_PROJECT="${WANDB_PROJECT:-latent-sft}"
 export PATH="$LSFT_ENV/bin:$PATH"
 
-# DeepSpeed checks op compatibility at import by running `$CUDA_HOME/bin/nvcc -V` and
-# dies without a CUDA toolkit, which the node does not have. The pip wheel
-# nvidia-cuda-nvcc-cu12 (12.4, matching torch cu124) provides nvcc; nothing is compiled
-# (the optimizer is torch AdamW), only the version is read.
+# DeepSpeed 0.17 runs `$CUDA_HOME/bin/nvcc -V` at import (FPQuantizerBuilder.is_compatible)
+# and raises MissingCUDAException without a CUDA toolkit, which this node does not have
+# (the pip wheels nvidia-cuda-nvcc-cu12 ship only ptxas). Nothing is compiled here — the
+# optimizer is torch AdamW — so a shim that reports the torch CUDA version (12.4) is enough.
+# Any real compilation attempt fails loudly through the shim instead of silently.
 if [ -z "${CUDA_HOME:-}" ] && ! command -v nvcc >/dev/null 2>&1; then
-  _nvcc_home="$LSFT_ENV/lib/python3.12/site-packages/nvidia/cuda_nvcc"
-  if [ -x "$_nvcc_home/bin/nvcc" ]; then export CUDA_HOME="$_nvcc_home"; fi
+  _shim="$LSFT_ENV/cuda-shim"
+  if [ ! -x "$_shim/bin/nvcc" ] && [ -d "$LSFT_ENV" ]; then
+    mkdir -p "$_shim/bin"
+    cat > "$_shim/bin/nvcc" <<'SHIM'
+#!/bin/sh
+# Version-only nvcc shim for DeepSpeed's import-time check; see h200/env.sh.
+case "$*" in
+  *-V*|*--version*) echo "nvcc: NVIDIA (R) Cuda compiler driver"
+                    echo "Cuda compilation tools, release 12.4, V12.4.131"; exit 0 ;;
+esac
+echo "cuda-shim: no real nvcc on this node, cannot compile: $*" >&2; exit 1
+SHIM
+    chmod +x "$_shim/bin/nvcc"
+  fi
+  if [ -x "$_shim/bin/nvcc" ]; then export CUDA_HOME="$_shim"; fi
 fi
