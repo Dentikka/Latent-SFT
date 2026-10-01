@@ -45,6 +45,7 @@ if [ -z "${MAX_STEPS:-}" ]; then
   REPORT=wandb
   export WANDB_RUN_ID="$(basename "$EXP_DIR")" WANDB_RESUME=allow WANDB_DIR="$EXP_DIR"
   grep -q wandb-radfan "$HOME/.netrc" 2>/dev/null || export WANDB_MODE=offline
+  export LSFT_KEEP_EPOCHS_DIR="$EXP_DIR/epochs"   # end-of-epoch weights survive rotation
 fi
 nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv -l 60 >> "$EXP_DIR/gpumem.log" &
 

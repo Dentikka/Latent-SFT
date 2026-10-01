@@ -127,6 +127,9 @@ def main():
 
     Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
 
+    if os.environ.get('LSFT_KEEP_EPOCHS_DIR'):  # optional, see h200/keep_epochs.py
+        from h200.keep_epochs import KeepEpochCheckpoints
+        trainer.add_callback(KeepEpochCheckpoints(os.environ['LSFT_KEEP_EPOCHS_DIR']))
     trainer.train(resume_from_checkpoint=_resolve_resume(training_args))
     trainer.save_model()
 
