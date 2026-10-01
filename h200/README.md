@@ -15,4 +15,5 @@ account `fpmi-p10`, queue `gpu`, 2 x H200 NVL, 8 h per job.
    Jobs chain themselves across the 8 h limit and resume via
    `--resume_from_checkpoint auto` (added to all four entrypoints; unset = original behaviour).
 
+Per-user caps (QOS): cpu queue 8 CPUs / 45 GB, gpu queue 32 CPUs / 2 GPUs / 180 GB.
 Global batch is kept at 64 (the original 8 GPUs x 1 x 8) by raising gradient accumulation.

@@ -7,7 +7,7 @@
 #SBATCH -p gpu
 #SBATCH --gres=gpu:2
 #SBATCH -c 32
-#SBATCH --mem=320G
+#SBATCH --mem=176G
 #SBATCH -t 08:00:00
 #SBATCH -J lsft-s1
 #SBATCH -o /home/data/%u/logs/%x-%j.log
@@ -59,7 +59,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=$NGPU \
   --learning_rate "$LR" --warmup_ratio 0.05 --weight_decay 0.01 --lr_scheduler_type cosine \
   --num_train_epochs "$EPOCHS" ${MAX_STEPS:+--max_steps $MAX_STEPS} --bf16 \
   --per_device_train_batch_size "$PER_DEVICE_BS" --gradient_accumulation_steps "$GA" \
-  --dataloader_drop_last False --dataloader_num_workers 8 --dataloader_prefetch_factor 16 \
+  --dataloader_drop_last False --dataloader_num_workers 4 --dataloader_prefetch_factor 16 \
   --dataloader_pin_memory True --logging_steps 1 --gradient_checkpointing True \
   --save_strategy "$SAVE_STRATEGY" ${SAVE_STEPS:+--save_steps $SAVE_STEPS} \
   --save_total_limit "$SAVE_TOTAL_LIMIT" --seed "${SEED:-42}" \

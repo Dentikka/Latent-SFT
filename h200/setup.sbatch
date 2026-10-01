@@ -5,7 +5,7 @@
 #SBATCH -p cpu
 #SBATCH -J lsft-setup
 #SBATCH -c 8
-#SBATCH --mem=48G
+#SBATCH --mem=40G
 #SBATCH -t 04:00:00
 #SBATCH -o /home/data/%u/logs/%x-%j.log
 set -euo pipefail
