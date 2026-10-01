@@ -20,3 +20,12 @@ export HF_HOME="$LSFT_ROOT/hf-cache"
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://wandb-radfan.ru}"
 export WANDB_PROJECT="${WANDB_PROJECT:-latent-sft}"
 export PATH="$LSFT_ENV/bin:$PATH"
+
+# DeepSpeed checks op compatibility at import by running `$CUDA_HOME/bin/nvcc -V` and
+# dies without a CUDA toolkit, which the node does not have. The pip wheel
+# nvidia-cuda-nvcc-cu12 (12.4, matching torch cu124) provides nvcc; nothing is compiled
+# (the optimizer is torch AdamW), only the version is read.
+if [ -z "${CUDA_HOME:-}" ] && ! command -v nvcc >/dev/null 2>&1; then
+  _nvcc_home="$LSFT_ENV/lib/python3.12/site-packages/nvidia/cuda_nvcc"
+  if [ -x "$_nvcc_home/bin/nvcc" ]; then export CUDA_HOME="$_nvcc_home"; fi
+fi

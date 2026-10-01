@@ -18,6 +18,7 @@ source "$EXP_DIR/run.env"
 cd "$LSFT_REPO"
 echo "== job $SLURM_JOB_ID $(date) stage=$STAGE exp=$EXP_DIR repo=$(git rev-parse --short HEAD)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
+echo "CUDA_HOME=${CUDA_HOME:-unset} nvcc=$("${CUDA_HOME:-/nonexistent}/bin/nvcc" --version 2>/dev/null | grep -o "release [0-9.]*" || echo none)"
 
 OUT="$EXP_DIR/out"
 [ -f "$EXP_DIR/DONE" ] && { echo "DONE already, nothing to do"; exit 0; }
