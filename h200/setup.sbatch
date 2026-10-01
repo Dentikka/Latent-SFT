@@ -49,30 +49,37 @@ base = snapshot_download("Qwen/Qwen2.5-Math-7B", local_dir=f"{M}/Qwen2.5-Math-7B
 ref = snapshot_download("DJCheng/Qwen2.5-Math-7B-Latent-SFT-4k-Top10",
                         local_dir=f"{M}/Qwen2.5-Math-7B-Latent-SFT-4k-Top10")
 
-# Qwen2.5-Math-7B-think: base weights (hard links, no extra disk) with the two edits
-# that distinguish the released Latent-SFT checkpoint's config/tokenizer from the base.
+# Training base: Qwen2.5-Math-7B weights (hard links) + max_position_embeddings=16384 as in the
+# released checkpoint's config. The chat template stays the base one: for Qwen,
+# src/stage1/data.py appends the '<think>' token ids itself after
+# apply_chat_template(add_generation_prompt=True). The '<think>' in the released
+# checkpoint's template is for Latent-GRPO rollouts/eval (see the Latent-GRPO README) and
+# must NOT be in the training template, or every example starts with '<think><think>'.
 dst = os.environ["LSFT_BASE"]
 os.makedirs(dst, exist_ok=True)
 for name in os.listdir(base):
     s, t = os.path.join(base, name), os.path.join(dst, name)
-    if os.path.isfile(s) and not os.path.exists(t):
-        (os.link if name.endswith(".safetensors") else shutil.copy2)(s, t)
+    if not os.path.isfile(s):
+        continue
+    if name.endswith(".safetensors"):
+        if not os.path.exists(t):
+            os.link(s, t)
+    else:
+        shutil.copy2(s, t)          # small files: always refresh from the base
 cfg = json.load(open(f"{dst}/config.json"))
 cfg["max_position_embeddings"] = 16384
 json.dump(cfg, open(f"{dst}/config.json", "w"), indent=2)
 tc = json.load(open(f"{dst}/tokenizer_config.json"))
-tpl = open(f"{ref}/chat_template.jinja").read()
-old = tc["chat_template"].replace("\r", "")
-assert tpl.replace("\r", "") == old.replace("'<|im_start|>assistant\\n' }}", "'<|im_start|>assistant\\n<think>' }}"), \
-    "released template differs from base by more than '<think>'"
-tc["chat_template"] = tpl
-json.dump(tc, open(f"{dst}/tokenizer_config.json", "w"), indent=2, ensure_ascii=False)
+tpl = open(f"{ref}/chat_template.jinja").read().replace("\r", "")
+gen_old, gen_new = "'<|im_start|>assistant\\n' }}", "'<|im_start|>assistant\\n<think>' }}"
+assert tpl == tc["chat_template"].replace("\r", "").replace(gen_old, gen_new), \
+    "released template differs from base by more than the '<think>' generation prompt"
 
 from transformers import AutoTokenizer
 tok = AutoTokenizer.from_pretrained(dst)
 p = tok.apply_chat_template([{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
                             tokenize=False, add_generation_prompt=True)
-assert p.endswith("<|im_start|>assistant\n<think>"), p
+assert p.endswith("<|im_start|>assistant\n"), p
 n = sum(1 for _ in open(f"{D}/OpenR1-Math-220k-v-train-4k.jsonl"))
 print(f"OK base={dst} train_rows={n}")
 EOF

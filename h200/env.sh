@@ -9,11 +9,10 @@ export LSFT_SERIES="${LSFT_SERIES:-0930-qwen-lsft-repro}"
 export LSFT_EXPS="$LSFT_ROOT/projects/latent-sft/exps/$LSFT_SERIES"
 export LSFT_LOGS="$LSFT_ROOT/logs"
 
-# Base model prepared by setup.sbatch: Qwen2.5-Math-7B + '<think>' in the generation
-# prompt + max_position_embeddings=16384, exactly as in the released
-# DJCheng/Qwen2.5-Math-7B-Latent-SFT-4k-Top10. The path must contain "qwen":
-# src/stage1/data.py picks the prompt format by substring of the model path.
-export LSFT_BASE="$LSFT_MODELS/Qwen2.5-Math-7B-think"
+# Training base prepared by setup.sbatch: Qwen2.5-Math-7B with max_position_embeddings=16384
+# and the base chat template (the training code adds '<think>' itself). The path must
+# contain "qwen": src/stage1/data.py picks the prompt format by substring of the model path.
+export LSFT_BASE="$LSFT_MODELS/Qwen2.5-Math-7B-lsft"
 export LSFT_TRAIN="$LSFT_DATA/OpenR1-Math-220k-v-train-4k.jsonl"
 
 export HF_HOME="$LSFT_ROOT/hf-cache"
