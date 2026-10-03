@@ -2,14 +2,18 @@
 
 In the released data the latent chain replaces only the `<think>` block (`cot`), while the
 cleaned prose solution (`cot_answer`) is trained with plain CE and written as text at
-inference. Here everything except the final answer goes into the latent chain:
+inference. Here only the final answer is text:
 
-    cot        := think body + "\\n\\n" + prose with its last \\boxed{X} unwrapped to X
-    cot_answer := "\\boxed{X}"
+    --latent think+prose (default):
+        cot        := think body + "\\n\\n" + prose with its last \\boxed{X} unwrapped to X
+    --latent think:
+        cot        := think body   (the same latent content as the authors' model; the prose
+                                    is a cleaned restatement and is dropped)
+    cot_answer := "\\boxed{X}", X taken from the last \\boxed{} of the prose
 
 Rows whose `cot_answer` has no \\boxed{...} are dropped. The source file is not modified.
 
-Usage: python h200/make_honest_data.py <in.jsonl> <out.jsonl> [--tokenizer PATH]
+Usage: python h200/make_honest_data.py <in.jsonl> <out.jsonl> [--latent think] [--tokenizer PATH]
 """
 import argparse
 import json
@@ -45,14 +49,17 @@ def strip_think(cot: str) -> str:
     return cot.strip()
 
 
-def convert(row: dict) -> Optional[dict]:
+def convert(row: dict, latent: str = "think+prose") -> Optional[dict]:
     box = last_boxed(row["cot_answer"])
     if box is None:
         return None
     start, end, content = box
-    prose = (row["cot_answer"][:start] + content + row["cot_answer"][end:]).strip()
     out = dict(row)
-    out["cot"] = strip_think(row["cot"]) + "\n\n" + prose
+    if latent == "think":
+        out["cot"] = strip_think(row["cot"])
+    else:
+        prose = (row["cot_answer"][:start] + content + row["cot_answer"][end:]).strip()
+        out["cot"] = strip_think(row["cot"]) + "\n\n" + prose
     out["cot_answer"] = "\\boxed{" + content + "}"
     return out
 
@@ -62,6 +69,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("inp")
     ap.add_argument("out")
+    ap.add_argument("--latent", choices=["think+prose", "think"], default="think+prose")
     ap.add_argument("--tokenizer", default=None, help="report token lengths with this tokenizer")
     args = ap.parse_args()
 
@@ -78,7 +86,7 @@ def main() -> None:
                 continue
             row = json.loads(line)
             n_in += 1
-            new = convert(row)
+            new = convert(row, args.latent)
             if new is None:
                 n_nobox += 1
                 continue
