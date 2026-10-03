@@ -57,6 +57,8 @@ def convert(row: dict, latent: str = "think+prose") -> Optional[dict]:
     out = dict(row)
     if latent == "think":
         out["cot"] = strip_think(row["cot"])
+        if not out["cot"]:          # empty <think>: no latent chain (data.py asserts count > 0)
+            return None
     else:
         prose = (row["cot_answer"][:start] + content + row["cot_answer"][end:]).strip()
         out["cot"] = strip_think(row["cot"]) + "\n\n" + prose
@@ -104,7 +106,8 @@ def main() -> None:
                 logger.info("example cot_answer: %r", new["cot_answer"])
                 logger.info("example cot tail: %r", new["cot"][-200:])
 
-    logger.info("rows in %d, out %d, dropped without \\boxed %d, boxed != `answer` field %d",
+    logger.info("rows in %d, out %d, dropped (no \\boxed, or empty <think> with --latent think) %d, "
+                "boxed != `answer` field %d",
                 n_in, n_out, n_nobox, n_mismatch)
     for k, v in lens.items():
         if v:
