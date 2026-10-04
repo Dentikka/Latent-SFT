@@ -9,6 +9,8 @@ inside the latent chain and for the tokens from `</think>` on, under three atten
   repo    — the repo's supervision mask: a CoT token sees only its own segment and the
             preceding latent (no prompt, no first token);
   +prompt — the same, plus every row after the prompt may attend to the whole prompt;
+  +first  — the same, plus every row may attend to the first token only (an attention
+            sink without the prompt's content);
   causal  — plain causal attention over the same sequence, plain positions.
 
 CPU only, ~20 GB RAM. Usage: python h200/diag_mask_ce.py [--n 3] [--r 2]
@@ -104,12 +106,15 @@ def main() -> None:
         T = ids.shape[1]
         m_prompt = mask.clone()
         m_prompt[..., prompt_len:, :prompt_len] = 0.0
+        m_first = mask.clone()
+        m_first[..., prompt_len:, 0] = 0.0
         m_causal = torch.triu(torch.full((1, 1, T, T), NEG, dtype=torch.bfloat16), diagonal=1)
         n_cot = int(((labels[0] != -100) & (torch.arange(T) < split)).sum())
         logger.info("example %d: seq %d, latents %d, prompt %d, supervised CoT tokens %d, answer tokens %d",
                     i, T, lat_pos.numel(), prompt_len, n_cot, int((labels[0, split:] != -100).sum()))
         for name, m, pos in [("repo", mask, batch["position_ids"]),
                              ("+prompt", m_prompt, batch["position_ids"]),
+                             ("+first", m_first, batch["position_ids"]),
                              ("causal", m_causal, torch.arange(T).unsqueeze(0))]:
             with torch.no_grad():
                 logits = model(inputs_embeds=x, attention_mask=m, position_ids=pos).logits
