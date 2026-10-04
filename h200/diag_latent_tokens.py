@@ -42,9 +42,8 @@ logger = logging.getLogger(__name__)
 SYSTEM = "Please reason step by step, and put your final answer within \\boxed{}."
 
 
-def load_embedding(base: str) -> torch.Tensor:
-    """The decoder's input embedding matrix, read alone from the base safetensors."""
-    key = "model.embed_tokens.weight"
+def load_embedding(base: str, key: str = "model.embed_tokens.weight") -> torch.Tensor:
+    """One weight matrix (default: the decoder's input embedding) read alone from the base safetensors."""
     index_path = os.path.join(base, "model.safetensors.index.json")
     shard = (json.load(open(index_path))["weight_map"][key] if os.path.exists(index_path)
              else "model.safetensors")
@@ -69,7 +68,7 @@ def prepare(tok, rows, r):
     return items, comp
 
 
-def run_encoder(path, items, comp, E, topk):
+def run_encoder(path, items, comp, E, topk, R=None):
     """Top-K ids [count, K] and weights for every problem; the model is freed afterwards."""
     enc = AutoModel.from_pretrained(path, torch_dtype=torch.bfloat16, attn_implementation="sdpa").eval()
     out = []
@@ -77,7 +76,8 @@ def run_encoder(path, items, comp, E, topk):
         for n, it in enumerate(items):
             h = enc(it["ids"], attention_mask=it["mask"]).last_hidden_state[0]
             h = h[(it["ids"][0] == comp).nonzero().squeeze(-1)]
-            tv, ti = (h.to(E.dtype) @ E.T).float().topk(topk, dim=-1)
+            sel = E if R is None else R        # token selection: input embeddings (repo) or lm_head
+            tv, ti = (h.to(sel.dtype) @ sel.T).float().topk(topk, dim=-1)
             out.append((ti, tv.softmax(-1)))
             if (n + 1) % 20 == 0:
                 logger.info("%s: %d/%d", os.path.basename(path.rstrip("/")), n + 1, len(items))
@@ -87,7 +87,7 @@ def run_encoder(path, items, comp, E, topk):
 
 
 def report(name, tok, rows, items, lat, r, topk):
-    fid1 = fidk = nlat = ans1 = ansk = nans = 0
+    fid1 = fidk = nlat = ans1 = ansk = nans = nxt1 = nxtk = nnxt = 0
     top1w, neff, full, examples = [], [], [], []
     spectrum = Counter()
     for row, it, (ti, p) in zip(rows, items, lat):
@@ -100,6 +100,10 @@ def report(name, tok, rows, items, lat, r, topk):
             nlat += 1
             fid1 += int(ti[k, 0].item() in chunk)
             fidk += int(bool(chunk & set(ti[k].tolist())))
+            if (k + 1) * r < len(content):                 # first token of the next chunk
+                nnxt += 1
+                nxt1 += int(ti[k, 0].item() == content[(k + 1) * r])
+                nxtk += int(content[(k + 1) * r] in ti[k].tolist())
         box = last_boxed(row["solution"])
         ok_all = None
         if box is not None:
@@ -116,6 +120,7 @@ def report(name, tok, rows, items, lat, r, topk):
                     examples.append((row["answer"], [[tok.decode([t]) for t in ti[k, :3].tolist()] for k in ks]))
         full.append(ok_all)
     logger.info("RESULT [%s] fidelity: top-1 %.3f, top-%d %.3f over %d latents", name, fid1 / nlat, topk, fidk / nlat, nlat)
+    logger.info("RESULT [%s] next-chunk first token: top-1 %.3f, top-%d %.3f", name, nxt1 / max(1, nnxt), topk, nxtk / max(1, nnxt))
     logger.info("RESULT [%s] answer tokens: top-1 %.3f, top-%d %.3f over %d tokens; all answer tokens in top-1: %.3f",
                 name, ans1 / nans, topk, ansk / nans, nans, sum(bool(x) for x in full) / max(1, sum(x is not None for x in full)))
     logger.info("RESULT [%s] sharpness: mean top-1 weight %.3f, mean N_eff %.2f of %d",
@@ -139,15 +144,19 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--r", type=int, default=2)
     ap.add_argument("--topk", type=int, default=10)
+    ap.add_argument("--readout", choices=["embed", "lm_head"], default="embed",
+                    help="select the top-K tokens by h @ E_in (repo) or by h @ W_lm_head (the model's own logits)")
     args = ap.parse_args()
     torch.set_num_threads(int(os.environ.get("SLURM_CPUS_PER_TASK", "4")))
 
     tok = AutoTokenizer.from_pretrained(args.tokenizer or args.encoder)
     E = load_embedding(args.base).to(torch.bfloat16)
+    R = load_embedding(args.base, "lm_head.weight").to(torch.bfloat16) if args.readout == "lm_head" else None
+    logger.info("readout: %s", args.readout)
     rows = [json.loads(l) for l in open(args.data, encoding="utf-8")][:args.n]
     items, comp = prepare(tok, rows, args.r)
 
-    lat_a = run_encoder(args.encoder, items, comp, E, args.topk)
+    lat_a = run_encoder(args.encoder, items, comp, E, args.topk, R)
     full = report("A", tok, rows, items, lat_a, args.r, args.topk)
     if args.eval:
         ev = [json.loads(l) for l in open(args.eval, encoding="utf-8")][:args.n]
@@ -157,7 +166,7 @@ def main() -> None:
                 logger.info("RESULT decoder acc when answer %s in A's top-1: %.3f (n=%d)",
                             "IS" if flag else "is NOT", sum(sel) / len(sel), len(sel))
     if args.compare:
-        lat_b = run_encoder(args.compare, items, comp, E, args.topk)
+        lat_b = run_encoder(args.compare, items, comp, E, args.topk, R)
         report("B", tok, rows, items, lat_b, args.r, args.topk)
         agree = overlap = n = 0
         for (ta, _), (tb, _) in zip(lat_a, lat_b):
