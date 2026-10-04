@@ -54,6 +54,7 @@ def softmax_over_embedding_topk(
     temperature: float = 1.0,
     use_cosine: bool = False,
     eps: float = 1e-12,
+    select_weight=None,              # optional [vocab, h] matrix that selects the top-K
 ):
     W = embedding.weight.detach()    # [vocab, h]
     x = x.to(dtype=W.dtype, device=W.device)
@@ -61,6 +62,10 @@ def softmax_over_embedding_topk(
         x_n = F.normalize(x, p=2, dim=-1, eps=eps)
         W_n = F.normalize(W, p=2, dim=-1, eps=eps)
         logits = F.linear(x_n, W_n)          # [seq, vocab]
+    elif select_weight is not None:
+        # Select the top-K tokens by the model's own next-token logits (h @ W_lm_head); the
+        # mixture is still over the input embeddings W. See latent_select_weight.
+        logits = F.linear(x, select_weight.detach().to(dtype=W.dtype, device=W.device))
     else:
         logits = F.linear(x, W)              # [seq, vocab]
 
@@ -87,6 +92,28 @@ def softmax_over_embedding_topk(
     else:
         new_x = topk_probs @ W
         return new_x, topk_probs, None
+
+
+_READOUT_LOGGED = False
+
+
+def latent_select_weight(decoder):
+    """Token-selection matrix for the latent top-K, or None for the repo default (h @ E_in).
+
+    LSFT_LATENT_READOUT=lm_head selects by the decoder's output head, as the model itself does
+    at Stage 2 and in Latent-GRPO rollouts. It only matters with untied embeddings (e.g.
+    Qwen2.5-Math-7B), where h @ E_in carries no content at initialisation.
+    """
+    global _READOUT_LOGGED
+    readout = os.environ.get("LSFT_LATENT_READOUT", "embed")
+    if not _READOUT_LOGGED:
+        logging.getLogger(__name__).warning("[latent-readout] %s", readout)
+        _READOUT_LOGGED = True
+    if readout == "lm_head":
+        return decoder.get_output_embeddings().weight
+    if readout != "embed":
+        raise ValueError(f"LSFT_LATENT_READOUT must be 'embed' or 'lm_head', got {readout!r}")
+    return None
 
 
 def _is_main_process() -> bool:
@@ -306,7 +333,8 @@ class LatentSFTStage1Encoder(nn.Module):
                 decoder_embed_tokens,
                 self.topk_interpolation,               
                 temperature=1.0,
-                use_cosine=False
+                use_cosine=False,
+                select_weight=latent_select_weight(self.decoder),
             )                                                  # [m, h] requires gradient
 
             # 3) Use scatter with row indices to write new_b back into [seq, h]
@@ -493,7 +521,8 @@ class LatentSFTStage1Decoder(nn.Module):
                 decoder_embed_tokens,
                 top_k=self.topk_interpolation,              
                 temperature=1.0,
-                use_cosine=False
+                use_cosine=False,
+                select_weight=latent_select_weight(self.decoder),
             )                                                  # [m, h]
 
             idx_exp = decoder_idx.unsqueeze(-1).expand(-1, h)  # [m, h]
@@ -686,7 +715,8 @@ class LatentSFTStage1Union(nn.Module):
                 decoder_embed_tokens,
                 top_k=self.topk_interpolation,              
                 temperature=1.0,
-                use_cosine=False
+                use_cosine=False,
+                select_weight=latent_select_weight(self.decoder),
             )                                                  # [m, h]
 
             idx_exp = decoder_idx.unsqueeze(-1).expand(-1, h)  # [m, h]

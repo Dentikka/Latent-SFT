@@ -25,7 +25,7 @@ import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from eval_utils.grader import check_is_correct  # noqa: E402
 from eval_utils.parser import extract_answer  # noqa: E402
-from src.modeling.modeling_stage1 import LatentSFTStage1Encoder, softmax_over_embedding_topk  # noqa: E402
+from src.modeling.modeling_stage1 import LatentSFTStage1Encoder, latent_select_weight, softmax_over_embedding_topk  # noqa: E402
 from src.stage1.data import build_latent_token_induction_mask, insert_special_token_every_k  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,8 @@ def main() -> None:
                     src = (cot[b] == model.compress_token_id).nonzero().squeeze(-1)
                     dst = slots[b].nonzero().squeeze(-1)
                     assert src.numel() == dst.numel() == counts[b]
-                    mix, _, _ = softmax_over_embedding_topk(hidden[b, src], embed, args.topk)
+                    mix, _, _ = softmax_over_embedding_topk(hidden[b, src], embed, args.topk,
+                                                            select_weight=latent_select_weight(model.decoder))
                     emb[b, dst] = mix.to(emb.dtype)
 
             gen = model.decoder.generate(inputs_embeds=emb, attention_mask=att, max_new_tokens=args.max_new,

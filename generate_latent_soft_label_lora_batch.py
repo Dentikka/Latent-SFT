@@ -4,7 +4,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
-from src.modeling.modeling_stage1 import LatentSFTStage1Union
+from src.modeling.modeling_stage1 import LatentSFTStage1Union, latent_select_weight
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -99,6 +99,7 @@ def softmax_over_embedding_topk(
     use_cosine: bool = False,
     eps: float = 1e-12,
     full_vocab: bool = False,        # full-vocab mode
+    select_weight=None,              # optional [vocab, h] matrix that selects the top-K
 ):
     W = embedding.weight.detach()    # [vocab, h]
     x = x.to(dtype=W.dtype, device=W.device)
@@ -106,6 +107,10 @@ def softmax_over_embedding_topk(
         x_n = F.normalize(x, p=2, dim=-1, eps=eps)
         W_n = F.normalize(W, p=2, dim=-1, eps=eps)
         logits = F.linear(x_n, W_n)          # [seq, vocab]
+    elif select_weight is not None:
+        # Select the top-K tokens by the model's own next-token logits (h @ W_lm_head); the
+        # mixture is still over the input embeddings W. See latent_select_weight.
+        logits = F.linear(x, select_weight.detach().to(dtype=W.dtype, device=W.device))
     else:
         logits = F.linear(x, W)              # [seq, vocab]
 
@@ -337,6 +342,7 @@ class MultiprocessTransformerWrapper:
                         temperature=1.0,
                         use_cosine=False,
                         full_vocab=full_vocab,
+                        select_weight=latent_select_weight(model.decoder),
                     ) 
                     if full_vocab:
                         # full-vocab mode: save probs only, no indices
