@@ -70,3 +70,10 @@ python -m torch.distributed.run --standalone --nproc_per_node=$NGPU \
 
 touch "$EXP_DIR/DONE"
 echo "== finished $(date)"
+# Hand over to the next step: NEXT="<stage> <preset> <exp> [KEY=VALUE ...]" in run.env
+# (re-read by every link, so it can be appended while the chain runs).
+if [ -n "${NEXT:-}" ]; then
+  [ -n "${next:-}" ] && scancel "$next" && echo "cancelled successor $next"
+  echo "== next step: $NEXT"
+  bash "$LSFT_REPO/h200/submit.sh" $NEXT
+fi
