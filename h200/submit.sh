@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: bash h200/submit.sh <encoder|decoder|union> <preset> <exp-name> [KEY=VALUE ...]
+# Usage: bash h200/submit.sh <encoder|decoder|union|stage2> <preset> <exp-name> [KEY=VALUE ...]
 # Creates exps/<series>/<exp-name>/ with run.env (preset + overrides) and cmd.txt,
 # then submits h200/stage1.sbatch. Re-running on an existing exp resubmits it
 # (resuming from its newest checkpoint) without touching run.env.
@@ -14,5 +14,6 @@ if [ ! -f "$EXP_DIR/run.env" ]; then
 fi
 rm -f "$EXP_DIR/STALLED" "$EXP_DIR/ckpt_at_start"
 echo "$(date '+%F %T') bash h200/submit.sh $STAGE $PRESET $EXP $* @ $(git -C "$LSFT_REPO" rev-parse --short HEAD)" >> "$EXP_DIR/cmd.txt"
-job=$(sbatch --parsable -J "lsft-$STAGE" --export=ALL,EXP_DIR="$EXP_DIR",STAGE="$STAGE" "$LSFT_REPO/h200/stage1.sbatch")
+SB=stage1.sbatch; if [ "$STAGE" = stage2 ]; then SB=stage2.sbatch; fi
+job=$(sbatch --parsable -J "lsft-$STAGE" --export=ALL,EXP_DIR="$EXP_DIR",STAGE="$STAGE" "$LSFT_REPO/h200/$SB")
 echo "submitted $job -> $EXP_DIR ; log: $LSFT_LOGS/lsft-$STAGE-$job.log"

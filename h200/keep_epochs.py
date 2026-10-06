@@ -34,7 +34,12 @@ class KeepEpochCheckpoints(TrainerCallback):
         dst = os.path.join(self.keep_dir, f"epoch-{round(state.epoch)}-step-{state.global_step}")
         if os.path.exists(dst):
             return
+        # LSFT_KEEP_HF_EVERY=k keeps the merged hf/ (~15 GB) only every k-th epoch; the LoRA
+        # adapter is always kept (a long Stage-2 run has 70 epochs).
+        every = int(os.environ.get("LSFT_KEEP_HF_EVERY", "1"))
         for sub in ("hf", "lora_adapter"):
+            if sub == "hf" and round(state.epoch) % every:
+                continue
             if os.path.isdir(os.path.join(src, sub)):
                 shutil.copytree(os.path.join(src, sub), os.path.join(dst, sub), copy_function=os.link)
         logger.warning("kept epoch %s weights: %s", round(state.epoch), dst)

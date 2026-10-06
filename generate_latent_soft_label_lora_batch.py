@@ -76,7 +76,7 @@ def prepare_single_cot(examples, model, encoder_model_path, compression_rate):
     else:
         raise ValueError("Unsupported model type")
 
-    cot = examples['solution']
+    cot = examples['solution'] if 'solution' in examples else examples['cot']  # Stage-1 data names it 'cot'
     if cot.startswith("<think>"):
         cot = cot[len("<think>"):]
     if cot.endswith("</think>"):
