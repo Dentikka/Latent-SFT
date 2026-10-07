@@ -48,6 +48,11 @@ if [ -z "${MAX_STEPS:-}" ]; then
   export LSFT_KEEP_EPOCHS_DIR="$EXP_DIR/epochs" LSFT_KEEP_HF_EVERY="${KEEP_HF_EVERY:-5}"
 fi
 nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv -l 60 >> "$EXP_DIR/gpumem.log" &
+# Mirror each kept epoch's LoRA adapter to S3 for the honest eval on another server
+# (h200/s3_eval_watch.py); needs ~/.s3-cod.env, skipped without it.
+if [ -z "${MAX_STEPS:-}" ] && [ -f "$HOME/.s3-cod.env" ]; then
+  ( set -a; . "$HOME/.s3-cod.env"; set +a; exec python h200/s3_sync.py "$EXP_DIR/epochs"       "shveikinda/h200/$LSFT_SERIES/$(basename "$EXP_DIR")/epochs" --include lora_adapter --every 600   ) >> "$EXP_DIR/s3sync.log" 2>&1 &
+fi
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 python -m torch.distributed.run --standalone --nproc_per_node=$NGPU \

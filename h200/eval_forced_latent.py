@@ -119,6 +119,7 @@ def main() -> None:
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--samples", type=int, default=1, help="answers per problem (latents computed once)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--lora", default=None, help="LoRA adapter merged into --model before the eval")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -126,6 +127,9 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16,
                                                  attn_implementation="sdpa").to(dev).eval()
+    if args.lora:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, args.lora).merge_and_unload().eval()
     emb = model.get_input_embeddings()
     end_ids = tok("</think>", add_special_tokens=False)["input_ids"]
     pre_ids = tok(args.prefix, add_special_tokens=False)["input_ids"]
@@ -164,7 +168,7 @@ def main() -> None:
                     recs[i].setdefault(arm, []).append(head + o)
         logger.info("batch %d/%d done, %.0f s", s // args.batch + 1, -(-len(order) // args.batch), time.time() - t0)
 
-    summary = {"model": args.model, "n": len(data), "prefix": args.prefix,
+    summary = {"model": args.model, "lora": args.lora, "n": len(data), "prefix": args.prefix,
                "temperature": args.temperature, "top_p": args.top_p, "samples": args.samples}
     for arm in arms:
         per_sample = []
