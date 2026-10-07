@@ -46,11 +46,14 @@ def main() -> None:
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--max_new", type=int, default=24)
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--encoder_lora", default=None,
+                    help="encoder LoRA on top of --encoder, e.g. <union epoch>/lora_adapter/encoder_weight")
     args = ap.parse_args()
 
     dev = torch.device(args.device)
     model = LatentSFTStage1Encoder(encoder_name_or_path=args.encoder, decoder_name_or_path=args.decoder,
-                                   bfloat16=True, use_flash_attention_2=False, lora_tune=False,
+                                   bfloat16=True, use_flash_attention_2=False,
+                                   lora_tune=bool(args.encoder_lora), lora_path=args.encoder_lora,
                                    training=False).to(dev)
     model.eval()
     tok = model.tokenizer
