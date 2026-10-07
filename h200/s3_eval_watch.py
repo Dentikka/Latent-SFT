@@ -52,6 +52,15 @@ def epochs_ready(s3, prefix: str) -> dict:
             if "adapter_config.json" in names and any(n.startswith("adapter_model") for n in names)}
 
 
+def pick_gpu(allowed: list, min_free_gb: float):
+    """Highest-index allowed GPU with at least min_free_gb free memory now, else None."""
+    out = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True, check=True).stdout
+    free = {int(i): int(m) / 1024 for i, m in (line.split(",") for line in out.strip().splitlines())}
+    ok = [i for i in allowed if free.get(i, 0) >= min_free_gb]
+    return max(ok) if ok else None
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     ap = argparse.ArgumentParser()
@@ -63,6 +72,9 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--every", type=int, default=600)
     ap.add_argument("--until_epoch", type=int, default=70)
+    ap.add_argument("--gpus", default="", help="allowed GPU indices, e.g. 0,1,2,4,5,6,7 (shared server)")
+    ap.add_argument("--min_free_gb", type=float, default=45.0)
+    ap.add_argument("--batch", type=int, default=64)
     args = ap.parse_args()
     s3 = boto3.client("s3", endpoint_url=os.environ.get("S3_ENDPOINT", "https://s3.cod.phystech.edu"))
     os.makedirs(args.out, exist_ok=True)
@@ -81,11 +93,20 @@ def main() -> None:
             ad = os.path.join(args.out, "adapters", f"epoch-{ep}")
             download(s3, todo[ep], ad)
             ev = os.path.join(args.out, f"epoch-{ep}")
-            logger.info("epoch %d: eval on %d problems", ep, args.n)
+            env = dict(os.environ)
+            if args.gpus:
+                gpu = pick_gpu([int(g) for g in args.gpus.split(",")], args.min_free_gb)
+                if gpu is None:
+                    logger.info("epoch %d ready, no allowed GPU with %.0f GB free; waiting", ep, args.min_free_gb)
+                    time.sleep(args.every)
+                    continue
+                env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+            logger.info("epoch %d: eval on %d problems, GPU %s", ep, args.n, env.get("CUDA_VISIBLE_DEVICES"))
             subprocess.run([sys.executable, os.path.join(repo, "h200", "eval_forced_latent.py"),
                             "--model", args.model, "--lora", ad, "--data", args.data, "--out", ev,
                             "--arms", "forced", "--n", str(args.n), "--temperature", "0.6",
-                            "--top_p", "0.95", "--samples", "1"], check=True)
+                            "--top_p", "0.95", "--samples", "1", "--batch", str(args.batch)],
+                           check=True, env=env)
             s = json.load(open(os.path.join(ev, "summary.json"), encoding="utf-8"))
             row = {"epoch": ep, "forced": s["forced"], "mean_latent": s.get("mean_latent"),
                    "not_exited": s.get("not_exited"), "n": s["n"]}
