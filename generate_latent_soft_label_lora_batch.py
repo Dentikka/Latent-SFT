@@ -18,6 +18,15 @@ import argparse
 from torch import nn
 
 
+def _local(x, probs=False):
+    """A received label tensor as a local tensor: shared-memory tensors are cloned, numpy
+    arrays (LSFT_LABELS_NUMPY transport) are wrapped, probs back to bf16 as generated."""
+    if isinstance(x, torch.Tensor):
+        return x.clone()
+    t = torch.from_numpy(x)
+    return t.to(torch.bfloat16) if probs else t
+
+
 def chunked(iterable, batch_size):
     for i in range(0, len(iterable), batch_size):
         yield iterable[i:i + batch_size]
@@ -352,6 +361,15 @@ class MultiprocessTransformerWrapper:
                         latent_state.append((topk_probs.cpu(), topk_indices.cpu()))
                     
                 
+                if os.environ.get("LSFT_LABELS_NUMPY"):
+                    # Send plain numpy arrays through the pipe instead of shared-memory
+                    # tensors: in a Slurm job the shm files could not be unlinked and the
+                    # workers aborted (c10::Error in MapAllocator::close). bf16 has no numpy
+                    # dtype, so probs travel as float32 and are cast back exactly.
+                    if full_vocab:
+                        latent_state = [x.float().numpy() for x in latent_state]
+                    else:
+                        latent_state = [(p.float().numpy(), i.numpy()) for p, i in latent_state]
                 output_queue.put((batch_id, latent_state))
 
     def _gen(
@@ -399,10 +417,10 @@ class MultiprocessTransformerWrapper:
                 for item in latent_state_shared:
                     if isinstance(item, tuple):
                         # Top-K mode: (probs, indices)
-                        latent_state_clean.append((item[0].clone(), item[1].clone()))
+                        latent_state_clean.append((_local(item[0], probs=True), _local(item[1])))
                     else:
                         # full-vocab mode: probs only
-                        latent_state_clean.append(item.clone())
+                        latent_state_clean.append(_local(item, probs=True))
                 
                 # Store the cleaned local tensors in the results list
                 results.append((batch_id, latent_state_clean))

@@ -24,6 +24,7 @@ echo "== job $SLURM_JOB_ID $(date) exp=$EXP repo=$(git rev-parse --short HEAD) r
 LORA="$(ls -d "$EXP_DIR"/epochs/epoch-*/lora_adapter | sort -V | tail -1)"
 echo "encoder=$ENCODER decoder=$DECODER lora=$LORA data=$LSFT_TRAIN"
 nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv -l 60 >> "$EXP_DIR/gpumem-labels.log" &
+export LSFT_LABELS_NUMPY=1   # worker results via pipe, not /dev/shm (job 360 aborted on shm unlink)
 
 if [ ! -f "$EXP_DIR/soft-labels/COMPLETE" ]; then
   rm -rf "$EXP_DIR/soft-labels"
