@@ -86,6 +86,7 @@ def main() -> None:
         download(s3, args.init_prefix, args.model)
     curve = os.path.join(args.out, "curve.jsonl")
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fails = {}
     while True:
         done = set()
         if os.path.exists(curve):
@@ -105,12 +106,21 @@ def main() -> None:
                     continue
                 env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             logger.info("epoch %d: eval on %d problems, GPU %s", ep, args.n, env.get("CUDA_VISIBLE_DEVICES"))
-            subprocess.run([sys.executable, os.path.join(repo, "h200", "eval_forced_latent.py"),
-                            "--model", args.model, "--lora", ad, "--data", args.data, "--out", ev,
-                            "--arms", "forced", "--n", str(args.n), "--temperature", "0.6",
-                            "--top_p", "0.95", "--samples", "1", "--batch", str(args.batch)]
-                           + (["--prefix", args.answer_prefix] if args.answer_prefix is not None else []),
-                           check=True, env=env)
+            # On a shared GPU a neighbour can take memory mid-eval: a failed eval is retried after a
+            # pause with half the batch (down to 16) instead of killing the watcher.
+            batch = max(16, args.batch >> fails.get(ep, 0))
+            rc = subprocess.run([sys.executable, os.path.join(repo, "h200", "eval_forced_latent.py"),
+                                 "--model", args.model, "--lora", ad, "--data", args.data, "--out", ev,
+                                 "--arms", "forced", "--n", str(args.n), "--temperature", "0.6",
+                                 "--top_p", "0.95", "--samples", "1", "--batch", str(batch)]
+                                + (["--prefix", args.answer_prefix] if args.answer_prefix is not None else []),
+                                env=env).returncode
+            if rc != 0:
+                fails[ep] = fails.get(ep, 0) + 1
+                logger.info("epoch %d: eval failed (rc %d, batch %d, failure %d); retrying later",
+                            ep, rc, batch, fails[ep])
+                time.sleep(args.every)
+                continue
             s = json.load(open(os.path.join(ev, "summary.json"), encoding="utf-8"))
             row = {"epoch": ep, "forced": s["forced"], "prefix": s["prefix"], "mean_latent": s.get("mean_latent"),
                    "not_exited": s.get("not_exited"), "n": s["n"]}
