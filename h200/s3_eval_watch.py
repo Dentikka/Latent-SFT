@@ -75,7 +75,7 @@ def main() -> None:
     ap.add_argument("--gpus", default="", help="allowed GPU indices, e.g. 0,1,2,4,5,6,7 (shared server)")
     ap.add_argument("--min_free_gb", type=float, default=45.0)
     ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--prefix", default=None,
+    ap.add_argument("--answer_prefix", default=None,
                     help="forced answer start after </think> (eval_forced_latent default if unset); "
                          "for a model trained on '</think>\boxed{X}' use '\boxed'")
     args = ap.parse_args()
@@ -109,7 +109,7 @@ def main() -> None:
                             "--model", args.model, "--lora", ad, "--data", args.data, "--out", ev,
                             "--arms", "forced", "--n", str(args.n), "--temperature", "0.6",
                             "--top_p", "0.95", "--samples", "1", "--batch", str(args.batch)]
-                           + (["--prefix", args.prefix] if args.prefix is not None else []),
+                           + (["--prefix", args.answer_prefix] if args.answer_prefix is not None else []),
                            check=True, env=env)
             s = json.load(open(os.path.join(ev, "summary.json"), encoding="utf-8"))
             row = {"epoch": ep, "forced": s["forced"], "prefix": s["prefix"], "mean_latent": s.get("mean_latent"),
