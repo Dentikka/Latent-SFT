@@ -85,7 +85,9 @@ def prepare_single_cot(examples, model, encoder_model_path, compression_rate):
     else:
         raise ValueError("Unsupported model type")
 
-    cot = examples['solution'] if 'solution' in examples else examples['cot']  # Stage-1 data names it 'cot'
+    # The field holding the chain to compress: 'solution' upstream; Stage-1 data names it 'cot'
+    # (rows converted from OpenR1 keep a short reference 'solution' too - never fall back to it).
+    cot = examples[os.environ.get('LSFT_COT_FIELD', 'solution')]
     if cot.startswith("<think>"):
         cot = cot[len("<think>"):]
     if cot.endswith("</think>"):

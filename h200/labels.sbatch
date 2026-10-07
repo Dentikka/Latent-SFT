@@ -24,7 +24,8 @@ echo "== job $SLURM_JOB_ID $(date) exp=$EXP repo=$(git rev-parse --short HEAD) r
 LORA="$(ls -d "$EXP_DIR"/epochs/epoch-*/lora_adapter | sort -V | tail -1)"
 echo "encoder=$ENCODER decoder=$DECODER lora=$LORA data=$LSFT_TRAIN"
 nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv -l 60 >> "$EXP_DIR/gpumem-labels.log" &
-export LSFT_LABELS_NUMPY=1   # worker results via pipe, not /dev/shm (job 360 aborted on shm unlink)
+export LSFT_COT_FIELD=cot      # the <think> chain Stage 1 trained on; rows also carry a short OpenR1 "solution"
+export LSFT_LABELS_NUMPY=1     # worker results via pipe, not /dev/shm (job 360 aborted on shm unlink)
 
 if [ ! -f "$EXP_DIR/soft-labels/COMPLETE" ]; then
   rm -rf "$EXP_DIR/soft-labels"
@@ -34,11 +35,12 @@ if [ ! -f "$EXP_DIR/soft-labels/COMPLETE" ]; then
     --compression_rate "$COMPRESSION" --topk_interpolation "$TOPK"
   touch "$EXP_DIR/soft-labels/COMPLETE"
 fi
-python merge_lora.py --base_model_path "$DECODER" --lora_path "$LORA/decoder_weight" \
-  --output_path "$EXP_DIR/stage2-init" --output_subdir "" --device_map cpu
-python - "$EXP_DIR" "$LSFT_TRAIN" <<'PY'
-import glob, os, sys, torch
-exp, train = sys.argv[1], sys.argv[2]
+[ -f "$EXP_DIR/stage2-init/config.json" ] || python merge_lora.py --base_model_path "$DECODER" \
+  --lora_path "$LORA/decoder_weight" --output_path "$EXP_DIR/stage2-init" --output_subdir "" --device_map cpu
+python - "$EXP_DIR" "$LSFT_TRAIN" "$ENCODER" "$COMPRESSION" <<'PY'
+import glob, json, math, os, sys, torch
+from transformers import AutoTokenizer
+exp, train, enc, r = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 n_rows = sum(1 for _ in open(train, encoding="utf-8"))
 files = sorted(glob.glob(os.path.join(exp, "soft-labels", "batch_*.pt")), key=lambda p: int(os.path.basename(p).split("_")[1]))
 first = torch.load(files[0], map_location="cpu")
@@ -47,6 +49,16 @@ probs, idx = first[0]
 print(f"labels: {n} rows in {len(files)} files (train rows {n_rows}); first: {tuple(probs.shape)} latents, "
       f"top-1 weight {probs[:, 0].float().mean():.3f}, N_eff {(1 / (probs.float() ** 2).sum(-1)).mean():.2f}")
 assert n == n_rows, "label rows != train rows"
+# each row must have exactly ceil(len(cot tokens) / r) latents (first 200 rows)
+tok = AutoTokenizer.from_pretrained(enc)
+with open(train, encoding="utf-8") as f:
+    rows = [json.loads(next(f)) for _ in range(min(200, len(first)))]
+bad = 0
+for row, (p, _) in zip(rows, first):
+    c = row["cot"].removeprefix("<think>").removesuffix("</think>")
+    bad += p.shape[0] != math.ceil(len(tok(c, add_special_tokens=False)["input_ids"]) / r)
+print(f"labels vs cot length: {len(rows) - bad}/{len(rows)} rows match")
+assert bad == 0, "latent counts do not match the cot field"
 PY
 touch "$EXP_DIR/LABELS_DONE"
 echo "== finished $(date)"
