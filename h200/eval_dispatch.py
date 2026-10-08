@@ -178,7 +178,14 @@ def main() -> None:
         board.release(args.epoch)
     elif args.cmd == "run":
         board.put_claim(args.epoch, args.site, "running")
-        sys.exit(run_eval(board, args, args.epoch))
+        try:
+            rc = run_eval(board, args, args.epoch)
+        except Exception:
+            logger.exception("epoch %d: eval crashed", args.epoch)
+            rc = 1
+        if rc != 0:  # a failed eval must not block the board for RUNNING_TTL
+            board.release(args.epoch)
+        sys.exit(rc)
     elif args.cmd == "curve":
         for row in board.curve():
             print(json.dumps(row))

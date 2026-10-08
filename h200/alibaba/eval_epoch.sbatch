@@ -12,6 +12,8 @@ set -euo pipefail
 set -a; . "$HOME/.s3-cod.env"; set +a
 export PYTHONPATH="$PYLIB" PYTHONIOENCODING=utf-8
 echo "== job $SLURM_JOB_ID epoch $EP $(date)"
-apptainer exec --bind /dev --bind /bmcp_lvm_fs "$SIF" python3 "$REPO/h200/eval_dispatch.py" run \
+# No --bind /dev: setuid apptainer already mounts the host /dev (PPU visible); binding it again
+# inside a Slurm job broke /dev/urandom ("Unable to open /dev/urandom" on import torch).
+apptainer exec --bind /bmcp_lvm_fs "$SIF" python3 "$REPO/h200/eval_dispatch.py" run \
   --base "$BASE" --site alibaba --epoch "$EP" --model "$MODEL" --init_prefix "$INIT_PREFIX" \
   --data "$DATA" --work "$WORK" --batch 64
