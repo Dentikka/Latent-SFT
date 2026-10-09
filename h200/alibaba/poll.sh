@@ -5,6 +5,8 @@
 # claims the next epoch on the S3 board and submits h200/alibaba/eval_epoch.sbatch. A job still
 # pending after PENDING_MAX seconds is cancelled and its claim released.
 # Usage: SITE_ENV=<site.env> bash h200/alibaba/poll.sh
+# DISPATCH_ARGS in site.env (e.g. "--ns eval-sys4064 --prompt system --max_latent 4064") selects the
+# eval protocol; eval_epoch.sbatch passes the same.
 set -uo pipefail
 : "${SITE_ENV:?}"
 . "$SITE_ENV"
@@ -12,7 +14,7 @@ set -a; . "$HOME/.s3-cod.env"; set +a
 export PYTHONPATH="$PYLIB"
 EVERY=${EVERY:-600}; PENDING_MAX=${PENDING_MAX:-2100}; TOTAL=${TOTAL_CARDS:-10}
 D="$REPO/h200/eval_dispatch.py"
-py() { apptainer exec --bind /bmcp_lvm_fs "$SIF" python3 "$D" "$@" --base "$BASE" 2>/dev/null; }
+py() { apptainer exec --bind /bmcp_lvm_fs "$SIF" python3 "$D" "$@" --base "$BASE" ${DISPATCH_ARGS:-} 2>/dev/null; }
 
 obtainable() {   # prints "free preemptible"
   squeue -h -t R -o "%P|%M|%b" | awk -F'|' -v total="$TOTAL" '

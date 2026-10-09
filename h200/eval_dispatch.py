@@ -3,8 +3,13 @@
 The Stage-2 job uploads each epoch's LoRA adapter to <base>/epochs/. Every server runs a worker;
 workers never talk to each other, only to S3:
 
-  <base>/eval/results/epoch-K/{summary.json,records.jsonl}   done
-  <base>/eval/claims/epoch-K.json                            {"site", "state", "time"}
+  <base>/<ns>/results/epoch-K/{summary.json,records.jsonl}   done
+  <base>/<ns>/claims/epoch-K.json                            {"site", "state", "time"}
+
+<ns> (--ns, default "eval") names one eval protocol; workers of different protocols must not run
+together, since the one-eval rule is enforced per namespace. "eval": instruction in the user turn,
+latent cap 2048 (the first curve); "eval-sys4064": training-format prompt (instruction as system
+prompt) and cap 4064 = their eval budget of 4096 tokens minus the answer.
 
 Rule: at most ONE eval in the whole system at a time. A claim is active while it is "pending"
 (a Slurm job waiting to start) for < PENDING_TTL or "running" for < RUNNING_TTL; a worker starts
@@ -40,8 +45,9 @@ EPOCH = re.compile(r"epoch-(\d+)-step-(\d+)/lora_adapter/")
 
 
 class Board:
-    def __init__(self, base: str):
+    def __init__(self, base: str, ns: str = "eval"):
         self.base = base.rstrip("/")
+        self.ns = ns
         self.s3 = boto3.client("s3", endpoint_url=os.environ.get("S3_ENDPOINT", "https://s3.cod.phystech.edu"))
 
     def keys(self, prefix: str) -> list:
@@ -61,12 +67,12 @@ class Board:
                 if "adapter_config.json" in names and any(n.startswith("adapter_model") for n in names)}
 
     def done(self) -> set:
-        return {int(m.group(1)) for k in self.keys(f"{self.base}/eval/results/")
+        return {int(m.group(1)) for k in self.keys(f"{self.base}/{self.ns}/results/")
                 if (m := re.search(r"epoch-(\d+)/summary\.json$", k))}
 
     def claims(self) -> dict:
         out = {}
-        for k in self.keys(f"{self.base}/eval/claims/"):
+        for k in self.keys(f"{self.base}/{self.ns}/claims/"):
             m = re.search(r"epoch-(\d+)\.json$", k)
             if m:
                 out[int(m.group(1))] = json.loads(self.s3.get_object(Bucket=BUCKET, Key=k)["Body"].read())
@@ -79,10 +85,10 @@ class Board:
 
     def put_claim(self, epoch: int, site: str, state: str) -> None:
         body = json.dumps({"site": site, "state": state, "time": time.time()})
-        self.s3.put_object(Bucket=BUCKET, Key=f"{self.base}/eval/claims/epoch-{epoch}.json", Body=body)
+        self.s3.put_object(Bucket=BUCKET, Key=f"{self.base}/{self.ns}/claims/epoch-{epoch}.json", Body=body)
 
     def release(self, epoch: int) -> None:
-        self.s3.delete_object(Bucket=BUCKET, Key=f"{self.base}/eval/claims/epoch-{epoch}.json")
+        self.s3.delete_object(Bucket=BUCKET, Key=f"{self.base}/{self.ns}/claims/epoch-{epoch}.json")
 
     def claim(self, site: str):
         done = self.done()
@@ -105,13 +111,13 @@ class Board:
 
     def upload_results(self, epoch: int, src: str) -> None:
         for name in ("summary.json", "records.jsonl"):
-            self.s3.upload_file(os.path.join(src, name), BUCKET, f"{self.base}/eval/results/epoch-{epoch}/{name}")
+            self.s3.upload_file(os.path.join(src, name), BUCKET, f"{self.base}/{self.ns}/results/epoch-{epoch}/{name}")
 
     def curve(self) -> list:
         rows = []
         for e in sorted(self.done()):
             s = json.loads(self.s3.get_object(
-                Bucket=BUCKET, Key=f"{self.base}/eval/results/epoch-{e}/summary.json")["Body"].read())
+                Bucket=BUCKET, Key=f"{self.base}/{self.ns}/results/epoch-{e}/summary.json")["Body"].read())
             rows.append({"epoch": e, "forced": s["forced"], "mean_latent": s.get("mean_latent"),
                          "not_exited": s.get("not_exited"), "n": s["n"], "site": s.get("site")})
         return rows
@@ -124,12 +130,12 @@ def run_eval(board: Board, args, epoch: int, env=None) -> int:
         board.download(args.init_prefix, args.model)
     ad = os.path.join(args.work, "adapters", f"epoch-{epoch}")
     board.download(board.ready()[epoch], ad)
-    out = os.path.join(args.work, f"epoch-{epoch}")
+    out = os.path.join(args.work, f"epoch-{epoch}" if args.ns == "eval" else f"{args.ns}/epoch-{epoch}")
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cmd = [sys.executable, os.path.join(repo, "h200", "eval_forced_latent.py"), "--model", args.model,
            "--lora", ad, "--data", args.data, "--out", out, "--arms", "forced", "--n", str(args.n),
            "--temperature", "0.6", "--top_p", "0.95", "--samples", "1", "--batch", str(args.batch),
-           "--prefix", args.answer_prefix]
+           "--prefix", args.answer_prefix, "--prompt", args.prompt, "--max_latent", str(args.max_latent)]
     rc = subprocess.run(cmd, env=env).returncode
     if rc == 0:
         s = json.load(open(os.path.join(out, "summary.json"), encoding="utf-8"))
@@ -162,11 +168,14 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--answer_prefix", default="\\boxed")
+    ap.add_argument("--ns", default="eval", help="board namespace = eval protocol (see the module doc)")
+    ap.add_argument("--prompt", choices=["user", "system"], default="user")
+    ap.add_argument("--max_latent", type=int, default=2048)
     ap.add_argument("--gpus", default="")
     ap.add_argument("--min_free_gb", type=float, default=45.0)
     ap.add_argument("--every", type=int, default=600)
     args = ap.parse_args()
-    board = Board(args.base)
+    board = Board(args.base, args.ns)
 
     if args.cmd == "claim":
         e = board.claim(args.site)
