@@ -40,19 +40,25 @@ INSTR = "Please reason step by step, and put your final answer within \\boxed{}.
 PREFIX = "\n\nTherefore, the answer is \\boxed{"
 
 
-def prompt_ids(tok, problem: str) -> list:
-    """Their training/eval prompt: chat template + generation prompt, then `<think>`.
+def prompt_ids(tok, problem: str, mode: str = "user") -> list:
+    """Chat template + generation prompt, then `<think>`. mode "user": the instruction opens the
+    user turn (the template still adds its default system prompt); mode "system": the instruction
+    is the system prompt and the user turn is the bare problem, as in Stage-2 training
+    (src/stage2/data.py, Qwen branch) and their eval (eval/eval_high_tasks_sglang.py).
     A template that already ends with `<think>` (the released checkpoint's, meant for GRPO)
     is cut back so the prompt carries exactly one."""
-    text = tok.apply_chat_template([{"role": "user", "content": INSTR + problem}],
-                                   tokenize=False, add_generation_prompt=True)
+    msgs = ([{"role": "system", "content": INSTR.strip()}, {"role": "user", "content": problem}]
+            if mode == "system" else [{"role": "user", "content": INSTR + problem}])
+    text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     text = text[:-len("<think>")] if text.endswith("<think>") else text
     return tok(text + "<think>", add_special_tokens=False)["input_ids"]
 
 
 @torch.no_grad()
-def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id):
-    """Batched latent phase. Returns per-row lists of latent embeddings [k, h] and exit flags."""
+def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id, trace=None):
+    """Batched latent phase. Returns per-row lists of latent embeddings [k, h] and exit flags.
+    With a list `trace`, appends per row {"p_end": [...], "top1": [...]}: p(end_id) and the argmax
+    at every step the row is still in the phase (the exit step included)."""
     dev = emb.weight.device
     L = max(len(x) for x in batch_ids)
     ids = torch.tensor([[pad_id] * (L - len(x)) + x for x in batch_ids], device=dev)
@@ -61,6 +67,7 @@ def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id):
     x, past = emb(ids), None
     B = len(batch_ids)
     lat = [[] for _ in range(B)]
+    tr = [{"p_end": [], "top1": []} for _ in range(B)]
     done = torch.zeros(B, dtype=torch.bool, device=dev)
     for _ in range(max_latent):
         out = model(inputs_embeds=x, attention_mask=mask, position_ids=pos,
@@ -68,6 +75,13 @@ def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id):
         past = out.past_key_values
         logits = out.logits[:, -1, :]
         exits = logits.argmax(-1) == end_id
+        if trace is not None:
+            p_end = torch.softmax(logits.float(), -1)[:, end_id].tolist()
+            top1 = logits.argmax(-1).tolist()
+            for b in range(B):
+                if not done[b]:
+                    tr[b]["p_end"].append(round(p_end[b], 5))
+                    tr[b]["top1"].append(top1[b])
         tl, ti = logits.topk(topk, dim=-1)
         mix = (F.embedding(ti, emb.weight) * torch.softmax(tl.float(), -1).to(emb.weight.dtype).unsqueeze(-1)).sum(1)
         for b in range(B):
@@ -79,6 +93,8 @@ def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id):
         x = mix.unsqueeze(1)
         mask = torch.cat([mask, torch.ones(B, 1, dtype=mask.dtype, device=dev)], dim=1)
         pos = pos[:, -1:] + 1
+    if trace is not None:
+        trace.extend(tr)
     return [torch.stack(v) if v else emb.weight.new_zeros(0, emb.weight.shape[1]) for v in lat], done.tolist()
 
 
@@ -120,6 +136,9 @@ def main() -> None:
     ap.add_argument("--samples", type=int, default=1, help="answers per problem (latents computed once)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--lora", default=None, help="LoRA adapter merged into --model before the eval")
+    ap.add_argument("--prompt", choices=["user", "system"], default="user",
+                    help="instruction in the user turn (default, earlier evals) or as the system prompt (training format)")
+    ap.add_argument("--trace", action="store_true", help="store per-step p(</) and argmax ids of the latent phase")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -145,14 +164,17 @@ def main() -> None:
     t0 = time.time()
     for s in range(0, len(order), args.batch):
         idx = order[s:s + args.batch]
-        pids = [prompt_ids(tok, data[i]["problem"]) for i in idx]
+        pids = [prompt_ids(tok, data[i]["problem"], args.prompt) for i in idx]
         P = [emb(torch.tensor(p, device=emb.weight.device)) for p in pids]
         E = emb(torch.tensor(end_ids, device=emb.weight.device))
         R = emb(torch.tensor(pre_ids, device=emb.weight.device))
         if "forced" in arms or "free" in arms:
-            lats, exited = latent_phase(model, emb, pids, end_ids[0], args.topk, args.max_latent, pad_id)
-            for i, z, ok in zip(idx, lats, exited):
+            tr = [] if args.trace else None
+            lats, exited = latent_phase(model, emb, pids, end_ids[0], args.topk, args.max_latent, pad_id, tr)
+            for j, (i, z, ok) in enumerate(zip(idx, lats, exited)):
                 recs[i]["n_latent"], recs[i]["exited"] = z.shape[0], ok
+                if tr is not None:
+                    recs[i].update(tr[j])
         plan = {"forced": ([torch.cat([p, z, E, R]) for p, z in zip(P, lats)] if "forced" in arms else None,
                            args.max_new_forced, args.prefix),
                 "floor": ([torch.cat([p, E, R]) for p in P] if "floor" in arms else None,
@@ -169,6 +191,7 @@ def main() -> None:
         logger.info("batch %d/%d done, %.0f s", s // args.batch + 1, -(-len(order) // args.batch), time.time() - t0)
 
     summary = {"model": args.model, "lora": args.lora, "n": len(data), "prefix": args.prefix,
+               "prompt": args.prompt, "max_latent": args.max_latent,
                "temperature": args.temperature, "top_p": args.top_p, "samples": args.samples}
     for arm in arms:
         per_sample = []
