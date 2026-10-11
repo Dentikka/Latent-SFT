@@ -60,11 +60,13 @@ def prompt_ids(tok, problem: str, mode: str = "user") -> list:
 
 
 @torch.no_grad()
-def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id, trace=None, noise=None):
+def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id, trace=None, noise=None, codes=None):
     """Batched latent phase. Returns per-row lists of latent embeddings [k, h] and exit flags.
     With a list `trace`, appends per row {"p_end": [...], "top1": [...]}: p(end_id) and the argmax
     at every step the row is still in the phase (the exit step included).
-    noise: None (deterministic, their eval default) or {"scale", "temp", "top_p"} (see the module doc)."""
+    noise: None (deterministic, their eval default) or {"scale", "temp", "top_p"} (see the module doc).
+    With a list `codes`, appends per row (weights [k, K] fp16, indices [k, K] int32) of the k latents
+    it fed itself -- the Stage-2 soft-label format, used as self-distillation targets."""
     dev = emb.weight.device
     L = max(len(x) for x in batch_ids)
     ids = torch.tensor([[pad_id] * (L - len(x)) + x for x in batch_ids], device=dev)
@@ -75,6 +77,7 @@ def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id, trace=
     lat = [[] for _ in range(B)]
     tr = [{"p_end": [], "top1": []} for _ in range(B)]
     done = torch.zeros(B, dtype=torch.bool, device=dev)
+    steps_i, steps_w = [], []
     for _ in range(max_latent):
         out = model(inputs_embeds=x, attention_mask=mask, position_ids=pos,
                     past_key_values=past, use_cache=True)
@@ -94,6 +97,9 @@ def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id, trace=
                     tr[b]["p_end"].append(round(p_end[b], 5))
                     tr[b]["top1"].append(top1[b])
         mix = (F.embedding(ti, emb.weight) * w.to(emb.weight.dtype).unsqueeze(-1)).sum(1)
+        if codes is not None:  # a row's latents are steps 0..k-1, so per-step tensors suffice
+            steps_i.append(ti.to(torch.int32))
+            steps_w.append(w.to(torch.float16))
         for b in range(B):
             if not done[b] and not exits[b]:
                 lat[b].append(mix[b])
@@ -105,6 +111,11 @@ def latent_phase(model, emb, batch_ids, end_id, topk, max_latent, pad_id, trace=
         pos = pos[:, -1:] + 1
     if trace is not None:
         trace.extend(tr)
+    if codes is not None:
+        I, Wt = torch.stack(steps_i), torch.stack(steps_w)  # [T, B, K]
+        for b in range(B):
+            k = len(lat[b])
+            codes.append((Wt[:k, b].cpu(), I[:k, b].cpu()))
     return [torch.stack(v) if v else emb.weight.new_zeros(0, emb.weight.shape[1]) for v in lat], done.tolist()
 
 
@@ -168,6 +179,8 @@ def main() -> None:
     ap.add_argument("--latent_noise_temp", type=float, default=1.0)
     ap.add_argument("--latent_top_p", type=float, default=0.95)
     ap.add_argument("--latent_samples", type=int, default=1, help="noisy latent phases per problem")
+    ap.add_argument("--dump_latents", action="store_true",
+                    help="save each row's own latents (weights, indices) to latents.pt (self-distillation data)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -198,6 +211,7 @@ def main() -> None:
                 args.model, len(data), arms, end_ids, pre_ids)
 
     recs = {i: {"idx": data[i]["_idx"], "answer": data[i]["answer"]} for i in range(len(data))}
+    codes = {}
     for i, d in enumerate(data):
         if "_sample" in d:
             recs[i]["sample"] = d["_sample"]
@@ -210,7 +224,11 @@ def main() -> None:
         R = emb(torch.tensor(pre_ids, device=emb.weight.device))
         if "forced" in arms or "free" in arms:
             tr = [] if args.trace else None
-            lats, exited = latent_phase(model, emb, pids, end_ids[0], args.topk, args.max_latent, pad_id, tr, noise)
+            cd = [] if args.dump_latents else None
+            lats, exited = latent_phase(model, emb, pids, end_ids[0], args.topk, args.max_latent, pad_id, tr, noise, cd)
+            if cd is not None:
+                for i, c in zip(idx, cd):
+                    codes[i] = c
             for j, (i, z, ok) in enumerate(zip(idx, lats, exited)):
                 recs[i]["n_latent"], recs[i]["exited"] = z.shape[0], ok
                 if tr is not None:
@@ -248,6 +266,9 @@ def main() -> None:
         summary["not_exited"] = sum(not r["exited"] for r in recs.values())
         if "forced" in arms:  # honest: rows that never left the latent phase count as wrong
             summary["honest"] = sum(r["exited"] and r["forced_ok"][0] for r in recs.values()) / len(recs)
+    if args.dump_latents:  # same order as records.jsonl
+        torch.save([{"idx": recs[i]["idx"], "sample": recs[i].get("sample", 0), "exited": recs[i]["exited"],
+                     "probs": codes[i][0], "indices": codes[i][1]} for i in recs], os.path.join(args.out, "latents.pt"))
     with open(os.path.join(args.out, "records.jsonl"), "w", encoding="utf-8") as f:
         for r in recs.values():
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
