@@ -201,9 +201,29 @@ class LatentSFTStage2SoftEmbedding(nn.Module):
         self.latent_model.enable_input_require_grads()
         self.latent_model.gradient_checkpointing_enable(**kwargs)
 
+    @torch.no_grad()
+    def _scheduled_sampling(self, input_embeddings, attention_mask, latent_index, W, rho):
+        """Parallel scheduled sampling (https://arxiv.org/pdf/1906.04331) on the latent chain.
+
+        A no-grad teacher-forced pass predicts every latent from the encoder latents before it; each
+        latent input is then replaced, with probability rho, by the model's own prediction as built at
+        inference (softmax over its top-K logits, mixed in the embedding space). The KL targets stay the
+        encoder latents, so the model learns to return to the encoder chain from its own states, the
+        exposure bias behind 0.956 with encoder latents vs ~0.40 with its own. Enabled by LSFT_SS_RHO.
+        """
+        logits = self.latent_model(inputs_embeds=input_embeddings, attention_mask=attention_mask).logits
+        out = input_embeddings.clone()
+        for b in range(input_embeddings.shape[0]):
+            s, e = int(latent_index[b][0]), int(latent_index[b][1])
+            top_logits, top_idx = logits[b, s - 1:e - 1].float().topk(self.topk_interpolation, dim=-1)
+            own = weighted_embedding_from_topk(top_logits.softmax(-1), top_idx, W).to(out.dtype)
+            pick = torch.rand(e - s, device=out.device) < rho
+            out[b, s:e] = torch.where(pick.unsqueeze(-1), own, input_embeddings[b, s:e])
+        return out
+
     def forward(
-        self, 
-        input_ids: torch.LongTensor = None, 
+        self,
+        input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         latent_state: list = None, 
         latent_index: list = None, #B,2
@@ -230,7 +250,11 @@ class LatentSFTStage2SoftEmbedding(nn.Module):
             rows.append(row)
         input_embeddings = torch.stack(rows, dim=0)
 
-        decoder_outputs = self.latent_model(inputs_embeds=input_embeddings, 
+        ss_rho = float(os.environ.get("LSFT_SS_RHO", "0"))
+        if ss_rho > 0 and self.training:
+            input_embeddings = self._scheduled_sampling(input_embeddings, attention_mask, latent_index, W, ss_rho)
+
+        decoder_outputs = self.latent_model(inputs_embeds=input_embeddings,
             attention_mask = attention_mask
         )
 
