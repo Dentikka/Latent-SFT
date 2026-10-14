@@ -211,9 +211,15 @@ class LatentSFTStage2SoftEmbedding(nn.Module):
         encoder latents, so the model learns to return to the encoder chain from its own states, the
         exposure bias behind 0.956 with encoder latents vs ~0.40 with its own. Enabled by LSFT_SS_RHO.
         """
+        # LSFT_SS_SEQ_P: share of sequences that get own latents at all; the rest stay teacher-forced.
+        # rho 0.5 on every sequence (1014-ss-r1) left the model exiting the latent phase in 28% of
+        # Math-500 problems (88% before): it never saw a clean encoder chain end.
+        seq_p = float(os.environ.get("LSFT_SS_SEQ_P", "1"))
         logits = self.latent_model(inputs_embeds=input_embeddings, attention_mask=attention_mask).logits
         out = input_embeddings.clone()
         for b in range(input_embeddings.shape[0]):
+            if seq_p < 1 and float(torch.rand(())) >= seq_p:
+                continue
             s, e = int(latent_index[b][0]), int(latent_index[b][1])
             top_logits, top_idx = logits[b, s - 1:e - 1].float().topk(self.topk_interpolation, dim=-1)
             own = weighted_embedding_from_topk(top_logits.softmax(-1), top_idx, W).to(out.dtype)
