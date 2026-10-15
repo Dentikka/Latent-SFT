@@ -74,4 +74,10 @@ python -m torch.distributed.run --standalone --nproc_per_node=$NGPU \
   --overwrite_output_dir --output_dir "$OUT" --resume_from_checkpoint auto
 
 touch "$EXP_DIR/DONE"
+# Last pass of the adapter mirror: the background loop above runs every 10 min and is killed with
+# the job, so the final epoch (saved at the very end) never reached S3 (1014-ss-r1).
+if [ -z "${MAX_STEPS:-}" ] && [ -f "$HOME/.s3-cod.env" ]; then
+  ( set -a; . "$HOME/.s3-cod.env"; set +a; python h200/s3_sync.py "$EXP_DIR/epochs" \
+      "shveikinda/h200/$LSFT_SERIES/$(basename "$EXP_DIR")/epochs" --include lora_adapter ) >> "$EXP_DIR/s3sync.log" 2>&1 || true
+fi
 echo "== finished $(date)"
